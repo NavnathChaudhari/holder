@@ -1,178 +1,79 @@
-pipeline { 
-         agent any  
-         
-           environment {
-        jenkins_server_url = "http://192.168.152.130:8080"
-        notification_channel = 'devops'
-        slack_url = 'https://hooks.slack.com/services/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'
-        deploymentName = "web-server"
-    containerName = "web-server"
-    serviceName = "web-server"
-    imageName = "master.mine.com/holder/$JOB_NAME:v1.$BUILD_ID"
-     applicationURL="http://192.168.152.131"
-    applicationURI="epps-smartERP/" 		   
-		   
-        
+pipeline{
+    agent any
+	environment{
+imageName = "nava9594/$JOB_NAME:v1.$BUILD_ID"
+}
+    triggers {
+        pollSCM 'H/2 * * * *'
+		}
+    tools{
+        maven 'maven'
     }
-         
-    
-    tools {
-        maven 'maven3'
-    }
-    
-    stages { 
-        stage('Build Checkout') { 
-            steps { 
-              checkout([$class: 'GitSCM', branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[url: 'https://github.com/ckmine/holder.git']]])
-         }
+    stages{
+        stage('checkout the code'){
+            steps{
+                slackSend channel: 'hello-world', message: 'job started'
+                git url:'https://github.com/NavnathChaudhari/sonarqube.git', branch: 'master'
+            }
         }
-        stage('Build Now') { 
-            steps { 
-              
-                  dir("/var/lib/jenkins/workspace/mine-project") {
-                    sh 'mvn -version'
-                    sh 'mvn clean install'
-                      
-                    echo "build succses"
-                }
+        stage('build the code using maven'){
+            steps{
+                sh 'mvn clean package'
+            }
+        }
+        stage("test the code in sonaqube"){
+            steps{
+                script{
+                    withSonarQubeEnv(credentialsId: 'jenkins-sonar-token') {
+                            sh "mvn sonar:sonar -f /var/lib/jenkins/workspace/new-demo/pom.xml"
+                    }
+                    timeout(time: 1, unit: 'HOURS') {
+                      def qg = waitForQualityGate()
+                      if (qg.status != 'OK') {
+                           error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                      }
+                    }
+                } 
+            }
+        }
+        stage('create docker image'){
+            steps{
+                sh '''docker image build -t $JOB_NAME:v1.$BUILD_ID .
+docker image tag $JOB_NAME:v1.$BUILD_ID nava9594/$JOB_NAME:v1.$BUILD_ID
+docker image tag $JOB_NAME:v1.$BUILD_ID nava9594/$JOB_NAME:latest'''
+            }
 
-       
-              }
+        }
+        stage('push the image into docker hub'){
+            steps{
+                withCredentials([string(credentialsId: 'Docker pass', variable: 'docker_pass')]) {
+                    sh "docker login -u nava9594 -p ${docker_pass}"
+
+}
+                    sh '''docker image push nava9594/$JOB_NAME:v1.$BUILD_ID
+docker image push nava9594/$JOB_NAME:latest 
+docker image rmi $JOB_NAME:v1.$BUILD_ID nava9594/$JOB_NAME:v1.$BUILD_ID nava9594/$JOB_NAME:latest'''
 
             }
-            
-            
-            
-             
-              stage ('Code Quality scan') {
-              steps {
-       withSonarQubeEnv('sonar') {
-          
-       sh "mvn sonar:sonar -f /var/lib/jenkins/workspace/mine-project/pom.xml"
-      
         }
-   }
-              }
-              
-              
-              
-              
-              
-              stage ('Vulnerability Scan - Docker ') {
-              steps {
-                  
-                 parallel   (
-       "Dependency Scan": {
-       	     	sh "mvn dependency-check:check"
-		},
-	 	  "Trivy Scan":{
-	 		    sh "bash trivy-docker-image-scan.sh"
-		     	},
-		   "OPA Conftest":{
-			sh 'docker run --rm -v $(pwd):/project openpolicyagent/conftest test --policy opa-docker-security.rego Dockerfile'
-		    }   	
-		             	
-   	                      )
-                    
-              }
-               }
-              
-           
-              stage(' Rename and move Build To Perticuler Folder '){
-                steps {
-                   sh 'mv /var/lib/jenkins/workspace/mine-project/target/jenkins-git-integration.war   /var/lib/jenkins/workspace/mine-project/epps-smartERP.war'
-                  sh 'chmod -R 777 /var/lib/jenkins/workspace/mine-project/epps-smartERP.war'
-                  
-                  sh 'chmod -R 777 /var/lib/jenkins/workspace/mine-project/Dockerfile'
-                  sh 'chmod -R 777 /var/lib/jenkins/workspace/mine-project/shell.sh'
-                  sh 'chown jenkins:jenkins  /var/lib/jenkins/workspace/mine-project/trivy-docker-image-scan.sh'                
-                 
-                                     }
-                       }
-                       
-                       stage ("Slack-Notify"){
-                         steps {
-                            slackSend channel: 'devops', message: 'deployment successfully'
-                         }
-                       }
-
-    stage ('Regitsry Approve') {
-      steps {
-      echo "Taking approval from DEV Manager forRegistry Push"
-        timeout(time: 7, unit: 'DAYS') {
-        input message: 'Do you want to deploy?', submitter: 'admin'
+        stage('Deploy application on k8s'){
+            steps{
+		sh 'sed -i "s#replace#${imageName}#g" deployment.yaml'
+                sh 'kubectl apply -f deployment.yaml'
         }
-      }
+        }
     }
-
- // Building Docker images
-    stage('Building image | Upload to Harbor Repo') {
-      steps{
-            sh '/var/lib/jenkins/workspace/mine-project/shell.sh'  
-    }
-      
-    }
-    
-    
-	 stage('Vulnerability Scan - Kubernetes') {
-       steps {
-         parallel(
-           "OPA Scan": {
-             sh 'docker run --rm -v $(pwd):/project openpolicyagent/conftest test --policy opa-k8s-security.rego blue.yml'
-         },
-          "Kubesec Scan": {
-            sh "bash kubesec-scan.sh"
-          },
-           "Trivy Scan": {
-             sh "bash trivy-k8s-scan.sh"
-           }
-        )
-      }
-    }
-    
-    
-    stage('K8S Deployment - DEV') {
-       steps {
-         parallel(
-          "Deployment": {
-            withKubeConfig([credentialsId: 'kubeconfig']) {
-              sh "bash k8s-deployment.sh"
-             }
-           },
-         "Rollout Status": {
-            withKubeConfig([credentialsId: 'kubeconfig']) {
-             sh "bash k8s-deployment-rollout-status.sh"
-             }
-           }
-        )
-       }
-     }
-	    
-	   stage('Integration Tests - DEV') {
-         steps {
-         script {
-          try {
-            withKubeConfig([credentialsId: 'kubeconfig']) {
-               sh "bash integration-test.sh"
-             }
-            } catch (e) {
-             withKubeConfig([credentialsId: 'kubeconfig']) {
-               sh "kubectl -n default rollout undo deploy ${deploymentName}"
-             }
-             throw e
-           }
-         }
-       }
-     }  
-	    
-	    
-     
-}
-
-			 post{
-                      always{
-              dependencyCheckPublisher pattern: 'target/dependency-check-report.xml'
-       }
-   }
-
+        post{
+        always{
+            echo "========always========"
+        }
+        success{
+            echo "========pipeline executed successfully ========"
+            slackSend channel: 'hello-world', message: ' job success'
+        }
+        failure{
+            echo "========pipeline execution failed========"
+            slackSend channel: 'hello-world', message: ' job failed'
+        }
+        }
     }
