@@ -1,6 +1,6 @@
 pipeline{
     agent any
-	environment{
+    environment{
 imageName = "nava9594/$JOB_NAME:v1.$BUILD_ID"
 }
     triggers {
@@ -13,19 +13,24 @@ imageName = "nava9594/$JOB_NAME:v1.$BUILD_ID"
         stage('checkout the code'){
             steps{
                 slackSend channel: 'hello-world', message: 'job started'
-                git url:'https://github.com/NavnathChaudhari/sonarqube.git', branch: 'master'
+                git url:'https://github.com/NavnathChaudhari/holder.git', branch: 'main'
             }
         }
-        stage('build the code using maven'){
+        stage('build the code'){
             steps{
                 sh 'mvn clean package'
             }
         }
-        stage("test the code in sonaqube"){
+        stage('Mutation Tests - PIT') {
+          steps {
+           sh "mvn org.pitest:pitest-maven:mutationCoverage"
+        }
+       }
+        stage("sonar quality check"){
             steps{
                 script{
-                    withSonarQubeEnv(credentialsId: 'jenkins-sonar-token') {
-                            sh "mvn sonar:sonar -f /var/lib/jenkins/workspace/new-demo/pom.xml"
+                    withSonarQubeEnv(installationName: 'sonar-scanner', credentialsId: 'jenkins-sonar-token') {
+                            sh "mvn sonar:sonar -f /var/lib/jenkins/workspace/hello-world-cicd/pom.xml"
                     }
                     timeout(time: 1, unit: 'HOURS') {
                       def qg = waitForQualityGate()
@@ -58,7 +63,7 @@ docker image rmi $JOB_NAME:v1.$BUILD_ID nava9594/$JOB_NAME:v1.$BUILD_ID nava9594
         }
         stage('Deploy application on k8s'){
             steps{
-		sh 'sed -i "s#replace#${imageName}#g" deployment.yaml'
+                sh 
                 sh 'kubectl apply -f deployment.yaml'
         }
         }
